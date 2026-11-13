@@ -94,6 +94,35 @@ Supported methods: `initialize`, `session/new`, `session/prompt`, `session/cance
 
 </details>
 
+## Queue the next steps
+
+**Enter sends now; Tab queues while the agent is working.** For example, send
+“Refactor the loader” with Enter, then queue “Update its tests” and “Review the
+changes” with Tab. Follow-ups run one at a time, in order, after the preceding
+response and its tool work finish. They share the conversation context but do
+not enter model context early. Completion of a response is not a guarantee of
+semantic task success.
+
+- **Shift+Up** removes the newest pending prompt and restores it, unsent, into
+  an empty composer, including pasted text and images. It does not interrupt
+  the active task. Use Enter to send it now or busy Tab to queue it at the tail.
+- **Ctrl+G** manages pending prompts, including paused prompts while idle.
+  Cancellation or terminal failure pauses dependent work. Choose **Resume
+  paused queue** explicitly; an unrelated Enter does not resume it.
+- Local path, `@`, command and argument completion still owns Tab. Idle or
+  empty-composer Tab keeps input assistance; **Ctrl+N** requests or cycles AI
+  assistance while working, and Right accepts its candidate without sending.
+- Manual compaction shares the same ordered queue. `/log` follow-ups stay on
+  that exact read-only fork; `/done` asks for confirmation before discarding
+  pending log prompts.
+- Queue-manager Edit supports text-only prompts. Dequeue an image prompt to
+  edit it. Editing while images are being prepared cancels that enqueue intent;
+  press Tab again after making changes.
+
+Pending prompts are **process-local, not persisted**. Session changes retain
+main-session backlogs for the current process, but exiting or restarting evot
+loses them. Esc interrupts the active task; it no longer recovers queued text.
+
 ## Less harness. More model.
 
 - **Small by design.** ~1k prompt tokens and four core tools: `read`, `bash`, `edit`, `write`.

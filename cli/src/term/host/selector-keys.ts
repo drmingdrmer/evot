@@ -238,6 +238,9 @@ export function createSelectorKeysController(st: ReplState, deps: SelectorKeysDe
         void st.shareSelector?.delete(action.shareId)
         deps.renderer.requestRender()
         return
+      case 'queue-resume':
+        deps.queueEdit.resumePaused()
+        return
       case 'queue-edit':
         deps.queueEdit.editQueuedPrompt(action.entry)
         return

@@ -63,6 +63,7 @@ import { ManualCompaction } from './app/run/manual-compaction.js'
 import { PendingImages } from './app/composer/pending-images.js'
 import { createPasteHandlers, createPasteStore } from './app/composer/paste-input.js'
 import { createQueueEdit } from './app/queue/queue-edit.js'
+import { PendingQueue, createPendingQueueState } from './app/queue/pending-queue.js'
 import { BackgroundTerminals } from './app/background/background-terminals.js'
 import { awaitedTaskIds } from './app/background/background-panel.js'
 import { FileCompletion } from './app/composer/file-completion-controller.js'
@@ -145,6 +146,7 @@ export async function startRepl(opts: ReplOptions): Promise<void> {
     get computeSession() { return computeSession },
     get flushDeferredCloudUpdates() { return cloudCtl.flushDeferredCloudUpdates },
     get queueEdit() { return queueEdit },
+    get pendingQueue() { return pendingQueue },
     get renderer() { return renderer },
     get resumeCache() { return resumeCache },
     get resumeItems() { return resumeItems },
@@ -298,7 +300,50 @@ export async function startRepl(opts: ReplOptions): Promise<void> {
   st.runTurnCount = 0
   const runThinking = new RunThinking()
   const manualCompaction = new ManualCompaction()
-  st.queuedCompactionSubmissions = []
+  st.queueStartupTarget = { startup: 0 }
+  st.pendingQueue = createPendingQueueState()
+  const pendingQueue = new PendingQueue(st.pendingQueue)
+  st.queueEditState = null
+  st.draftEpoch = 0
+  st.draftImageEpoch = 0
+  st.pendingEnqueue = null
+  st.queueDispatchId = null
+  const queueEdit = createQueueEdit({
+    queue: pendingQueue,
+    getTarget: () => st.logMode ?? st.sessionId ?? st.queueStartupTarget,
+    getStream: () => st.streamRef,
+    getEditing: () => st.queueEditState,
+    setEditing: edit => { st.queueEditState = edit },
+    snapshot: composer.snapshot,
+    restore: composer.restore,
+    preparing: () => st.pendingEnqueue !== null || pendingImages.awaiting,
+    busy: () => st.isLoading || manualCompaction.active || st.destroyed,
+    getDispatch: () => st.queueDispatchId,
+    setDispatch: id => { st.queueDispatchId = id },
+    runQueued: async entry => {
+      if (typeof entry.target === 'object' && entry.target !== null && !('startup' in entry.target)) {
+        await slashCtl.runLogQuery(entry.target, entry.expandedText, entry.contentJson)
+      } else {
+        const extension = taskSession.followUpExtension(st.sessionId) ?? computeSession.followUpExtension(st.sessionId)
+        await runCtl.runQuery(entry.expandedText, entry.contentJson, undefined, extension)
+      }
+    },
+    getEditor: () => st.editor,
+    setEditor: next => { st.editor = next },
+    getOverlay: () => st.overlay,
+    setOverlay: next => { st.overlay = next },
+    commitSystem: scrollback.commitSystem,
+    commitUser: scrollback.commitUserMessage,
+    clearAll: composer.clearAll,
+    requestRender: () => {
+      st.queuedUserMessages = pendingQueue.visible(st.logMode ?? st.sessionId ?? st.queueStartupTarget).map(entry => ({
+        id: entry.id, version: entry.version, queue: entry.queue,
+        text: `${entry.paused ? '[paused] ' : entry.queue === 'follow_up' ? '[next] ' : '[steer] '}${entry.text}`,
+        message: { content: [{ type: 'text', text: entry.expandedText }] },
+      }))
+      renderer.requestRender()
+    },
+  })
   st.spinnerTimer = null
   const terminalTitle = new TerminalTitle(agent.cwd, () => ownedDashboardPort(st.serverState))
   const setTerminalTitle = terminalTitle.set.bind(terminalTitle)
@@ -309,8 +354,8 @@ export async function startRepl(opts: ReplOptions): Promise<void> {
       if (userLine) scrollback.commitUserMessage(userLine)
       void runCtl.runQuery(prompt, undefined, undefined, extension)
     },
-    canWake: () => !st.isLoading && !st.destroyed
-      && st.queuedUserMessages.length + st.queuedCompactionSubmissions.length === 0
+    canWake: () => !st.isLoading && !st.destroyed && !st.pendingEnqueue
+      && pendingQueue.visible(st.logMode ?? st.sessionId ?? st.queueStartupTarget).length === 0
       && st.overlay.kind !== 'ask-user',
     notify: text => scrollback.commitSystem('sys-loop', `  ${text}`),
     requestRender: () => renderer.requestRender(),
@@ -530,6 +575,7 @@ export async function startRepl(opts: ReplOptions): Promise<void> {
   st.lastLineage = []
   st.nextBackgroundLineId = 1
   st.logMode = null
+  st.logDiscardTarget = null
   st.exitHint = false
   st.exitHintTimer = null
   st.overlay = { kind: 'none' }
@@ -783,7 +829,7 @@ export async function startRepl(opts: ReplOptions): Promise<void> {
     // A run drains the notification queue itself between turns, so waking is
     // only for the idle case.
     runInFlight: () => st.isLoading,
-    queuedMessages: () => st.queuedUserMessages.length + st.queuedCompactionSubmissions.length,
+    queuedMessages: () => pendingQueue.visible(st.logMode ?? st.sessionId ?? st.queueStartupTarget).length,
     // An ask overlay is the agent waiting on the user: seizing the turn would
     // answer a question they have not answered yet.
     overlayBlocking: () => st.overlay.kind === 'ask-user',
@@ -814,24 +860,11 @@ export async function startRepl(opts: ReplOptions): Promise<void> {
     getEditor: () => st.editor,
     mutateEditor: composer.mutateEditor,
     isDestroyed: () => st.destroyed,
+    ownership: () => st.draftImageEpoch,
+    notify: message => scrollback.commitSystem('sys-image-error', `  ${message}`),
     requestRender: () => renderer.requestRender(),
     getDisplayText: composer.getDisplayText,
     getExpandedText: composer.getExpandedText,
-  })
-
-  const queueEdit = createQueueEdit({
-    getStream: () => st.streamRef,
-    getQueued: () => st.queuedUserMessages,
-    setQueued: messages => { st.queuedUserMessages = messages },
-    getEditor: () => st.editor,
-    setEditor: next => { st.editor = next },
-    getOverlay: () => st.overlay,
-    setOverlay: next => { st.overlay = next },
-    commitSystem: scrollback.commitSystem,
-    commitLines: scrollback.commitLines,
-    commitUser: scrollback.commitUserMessage,
-    clearAll: composer.clearAll,
-    requestRender: () => renderer.requestRender(),
   })
 
   st.inflightSync = null
@@ -919,7 +952,8 @@ export async function startRepl(opts: ReplOptions): Promise<void> {
     st.destroyed = true
     taskSession.dispose()
     computeSession.dispose()
-    st.queuedCompactionSubmissions = []
+    st.pendingEnqueue = null
+    st.pendingQueue.reservation = null
     asks.resolvePendingTaskModel()
     idle.unfreezeTerminalTitle()
     manualCompaction.abort()
@@ -961,6 +995,8 @@ export async function startRepl(opts: ReplOptions): Promise<void> {
     // would survive as orphans unless signalled synchronously right here.
     // The controller absorbs its own failures: cleanup must never throw.
     backgroundCleanup.dispose()
+    const pendingCount = st.pendingQueue.entries.length
+    if (pendingCount > 0) process.stderr.write(`\n  Discarding ${pendingCount} pending prompt${pendingCount === 1 ? '' : 's'}; the queue is not persisted.\n`)
   }
 
   function restartAfterCleanup(): void {

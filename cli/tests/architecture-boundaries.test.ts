@@ -107,7 +107,7 @@ describe('module dependency boundaries', () => {
   })
 
   test('busy submission and queue projections are independent of terminal side effects', async () => {
-    for (const file of ['queue/busy-submission', 'queue/prompt-queue', 'run/manual-compaction', 'composer/file-completion-controller', 'queue/queue-edit']) {
+    for (const file of ['queue/busy-submission', 'queue/prompt-queue', 'run/manual-compaction', 'composer/file-completion-controller', 'queue/queue-edit', 'queue/pending-queue']) {
       const text = await source(`../src/term/app/${file}.ts`)
       for (const forbidden of ['binding.js', 'renderer', 'process.', 'setTimeout', 'setInterval', ' as any']) {
         expect(text).not.toContain(forbidden)
@@ -117,7 +117,10 @@ describe('module dependency boundaries', () => {
     expect(host).toContain('busySubmissionAction(')
     expect(host).toContain('reconcileQueuedUserMessages(')
     const queueEdit = await source('../src/term/app/queue/queue-edit.ts')
-    expect(queueEdit).toContain('reconcilePromptQueue(')
+    expect(queueEdit).toContain('queue.reconcile(')
+    const pendingQueue = await source('../src/term/app/queue/pending-queue.ts')
+    expect(pendingQueue).toContain("stream.queuedPrompts('steering')")
+    expect(pendingQueue).toContain("stream.queuedPrompts('follow_up')")
     expect(host).not.toContain('function queueEntryText(')
     expect(host).toContain('manualCompaction.run(')
     expect(host).not.toContain('compactionTask = agent.compact(')
