@@ -39,13 +39,13 @@ export function createSuggestController(st: ReplState, deps: SuggestDeps): Sugge
     const interaction = deps.runInteraction.snapshot(deps.runInteractionInput())
     return resolveComposerGuidance({ interaction,
       mode: st.logMode ? 'log' : 'normal',
-      queuedCount: st.queuedUserMessages.length + st.queuedCompactionSubmissions.length })
+      queuedCount: st.queuedUserMessages.length })
   }
   // Explicit Tab can wait for referenced image bytes without blocking input.
   // A submit already parked on an image load still owns the composer.
   function suggestionInputReady(): boolean {
     return st.suggestionsReady && !st.destroyed && st.overlay.kind === 'none' && !st.commandWindowPreview
-      && !st.editor.completion && !deps.pendingImages.awaiting
+      && !st.editor.completion && !deps.pendingImages.awaiting && !st.pendingEnqueue && !st.queueEditState
   }
   function automaticSuggestionEligible(): boolean {
     // Run interaction distinguishes active work from a blocking tool wait;
@@ -77,7 +77,7 @@ export function createSuggestController(st: ReplState, deps: SuggestDeps): Sugge
         : ['retrying', 'quota_waiting', 'outage_waiting'].includes(st.spinnerState.phase) ? 'retrying' : 'running')
         : loop?.active || background.length > 0 ? 'waiting' : 'idle',
       mode: st.logMode ? 'log' : 'normal',
-      queued: st.queuedUserMessages.length + st.queuedCompactionSubmissions.length,
+      queued: st.queuedUserMessages.length,
       background: background.length,
       activities: activeWork(background, loop, deps.loopSession.runInFlight),
     }

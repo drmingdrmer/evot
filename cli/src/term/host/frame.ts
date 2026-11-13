@@ -1,3 +1,5 @@
+import { fileCompletionTarget } from '../../commands/completion.js'
+import { extractAtPrefix } from '../../commands/file-completion.js'
 import type { LoopSession } from '../../features/loop/session.js'
 import { formatLoopWaitLine } from '../../features/loop/wait-line.js'
 import type { Agent } from '../../native/index.js'
@@ -75,7 +77,7 @@ export function createFrameController(st: ReplState, deps: FrameDeps): FrameCont
       : interaction.interruptTarget === 'background'
         ? interaction.interruptPending ? `esc again to stop all ${interaction.backgroundTasks} task${interaction.backgroundTasks === 1 ? '' : 's'}` : 'esc twice to stop all'
         : undefined
-    return promptFromSnapshot({
+    const prompt = promptFromSnapshot({
       editor: st.editor,
       session: st.appState,
       config: st.configInfo,
@@ -99,8 +101,19 @@ export function createFrameController(st: ReplState, deps: FrameDeps): FrameCont
       suggestionExplicit: deps.suggestions.isExplicit(),
       suggestionFrame: deps.suggestionTicker.frame,
       loopParked,
-      queuedCount: st.queuedUserMessages.length + st.queuedCompactionSubmissions.length,
+      queuedCount: st.queuedUserMessages.length,
     })
+    const line = st.editor.lines[st.editor.cursorLine] ?? ''
+    const before = line.slice(0, st.editor.cursorCol)
+    const completing = st.editor.completion || extractAtPrefix(before) || fileCompletionTarget(line, st.editor.cursorCol) || before.trimStart().startsWith('/')
+    const inputHint = st.overlay.kind !== 'none' ? undefined
+      : st.queueEditState ? (st.queueEditState.consumed ? 'Original sent · copy changes or Esc discard' : 'Enter save · Esc discard')
+      : st.pendingEnqueue ? 'Preparing images · editing cancels enqueue'
+      : completing ? 'Tab complete · Enter accept'
+      : st.isLoading ? 'Enter steer · Tab queue · Shift+↑ dequeue · Ctrl+N assist'
+      : st.queuedUserMessages.length ? 'Ctrl+G manage/resume · Shift+↑ dequeue'
+      : undefined
+    return { ...prompt, inputHint }
   }
   function refreshBannerData(): void {
     if (deps.bannerCache.refresh(deps.agent.cwd, deps.agent.skillsDirs())) deps.renderer.requestRender()
@@ -163,6 +176,11 @@ export function createFrameController(st: ReplState, deps: FrameDeps): FrameCont
   }
 
   function buildFrame(): RenderFrame {
+    st.queuedUserMessages = st.pendingQueue.entries.filter(entry => entry.target === (st.logMode ?? st.sessionId ?? st.queueStartupTarget)).map(entry => ({
+      id: entry.id, version: entry.version, queue: entry.queue,
+      text: `${entry.paused ? '[paused] ' : entry.queue === 'follow_up' ? '[next] ' : '[steer] '}${entry.text}`,
+      message: { content: [{ type: 'text', text: entry.expandedText }] },
+    }))
     if (st.destroyed) return { lines: [] }
 
     // An overlay owns the screen, so hold the caret solid rather than
@@ -329,7 +347,6 @@ export function createFrameController(st: ReplState, deps: FrameDeps): FrameCont
       ? []
       : formatQueuedMessageLines([
           ...st.queuedUserMessages.map(message => message.text),
-          ...st.queuedCompactionSubmissions.map(message => message.displayText),
         ])
     if (queueLines.length > 0) {
       preEditorBlocks.push({
